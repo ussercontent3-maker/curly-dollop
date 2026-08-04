@@ -5,14 +5,10 @@
   ],
   "start_page": 1,
   "end_page": 10,
-
   "index_delay_seconds": 1.0,
   "video_delay_seconds": 1.0,
-
   "batch_size": 100,
   "request_timeout": 30,
-
   "max_retries": 3,
-
   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36"
 }
