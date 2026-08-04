@@ -1,0 +1,98 @@
+name: Source Catalog Scraper
+
+on:
+
+  workflow_dispatch:
+
+    inputs:
+
+      start_page:
+        description: "Starting index page"
+        required: false
+        default: "1"
+
+      end_page:
+        description: "Ending index page"
+        required: false
+        default: "10"
+
+
+jobs:
+
+  scrape:
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Update crawl range
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          path = "config/sources.json"
+
+          with open(path, "r") as f:
+              config = json.load(f)
+
+          config["start_page"] = int(
+              os.environ.get("START_PAGE", "1")
+          )
+
+          config["end_page"] = int(
+              os.environ.get("END_PAGE", "10")
+          )
+
+          with open(path, "w") as f:
+              json.dump(
+                  config,
+                  f,
+                  indent=2
+              )
+          PY
+
+        env:
+          START_PAGE: ${{ github.event.inputs.start_page || '1' }}
+          END_PAGE: ${{ github.event.inputs.end_page || '10' }}
+
+      - name: Run scraper
+        run: |
+          python -m scraper.main
+
+      - name: Commit scraper data
+        run: |
+
+          git config user.name \
+            "github-actions[bot]"
+
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            data/ \
+            state/ \
+            config/
+
+          git diff --cached \
+            --quiet \
+            || git commit \
+            -m "Update scraper dataset"
+
+          git push
