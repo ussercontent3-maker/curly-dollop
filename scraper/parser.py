@@ -273,12 +273,26 @@ def parse_video_page(
             "property": "og:image"
         }
     )
-
+    
     if og_image:
-        record["thumbnail_url"] = (
-            og_image.get("content")
-        )
-
+        record["thumbnail_url"] = og_image.get("content")
+    
+    # Fallback that worked in Colab
+    if not record["thumbnail_url"]:
+        for link in soup.find_all("link", rel="preload"):
+            if link.get("as") != "image":
+                continue
+    
+            href = link.get("href", "")
+    
+            if "/promo/" in href:
+                continue
+    
+            if "ic-vt" in href:
+                record["thumbnail_url"] = href
+                break
+    
+    # Final fallback to JSON
     if not record["thumbnail_url"]:
         record["thumbnail_url"] = (
             video_model.get("thumbURL")
@@ -439,6 +453,9 @@ def parse_video_page(
             record["creator_name"] = creator_name.strip() if isinstance(creator_name, str) else creator_name
         if not record["creator_path"] and creator_link_url:
             record["creator_path"] = urlparse(creator_link_url).path
+
+    print("Thumbnail:", record["thumbnail_url"])
+
 
 
     return record
