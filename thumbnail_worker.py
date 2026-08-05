@@ -17,8 +17,8 @@ BASE_URL = "https://greenxh.blog/videos"
 WORKER_ID = int(os.getenv("WORKER_ID", "0"))
 TOTAL_WORKERS = int(os.getenv("TOTAL_WORKERS", "1"))
 
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "500"))
-CONCURRENCY = int(os.getenv("CONCURRENCY", "50"))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "5"))
+CONCURRENCY = int(os.getenv("CONCURRENCY", "5"))
 
 REQUEST_TIMEOUT = 20
 MAX_RETRIES = 3
