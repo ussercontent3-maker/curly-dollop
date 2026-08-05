@@ -101,6 +101,7 @@ def extract_homepage_previews(initials):
         .get("videoListProps", {})
         .get("videoThumbProps", [])
     )
+    print("Thumb props found:", len(props))
 
     previews = {}
 
