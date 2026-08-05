@@ -17,8 +17,8 @@ BASE_URL = "https://greenxh.blog/videos"
 WORKER_ID = int(os.getenv("WORKER_ID", "0"))
 TOTAL_WORKERS = int(os.getenv("TOTAL_WORKERS", "1"))
 
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "5"))
-CONCURRENCY = int(os.getenv("CONCURRENCY", "5"))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "20"))
+CONCURRENCY = int(os.getenv("CONCURRENCY", "4"))
 
 REQUEST_TIMEOUT = 20
 MAX_RETRIES = 3
@@ -89,19 +89,16 @@ FETCH_SQL = """
 SELECT id, video_id
 FROM videos
 WHERE thumbnail IS NULL
-AND MOD(id, $1) = $2
 ORDER BY id
-LIMIT $3;
+LIMIT $1
+FOR UPDATE SKIP LOCKED;
 """
 
 
 async def fetch_batch(conn):
-    return await conn.fetch(
-        FETCH_SQL,
-        TOTAL_WORKERS,
-        WORKER_ID,
-        BATCH_SIZE,
-    )
+    async with conn.transaction():
+        rows = await conn.fetch(FETCH_SQL, BATCH_SIZE)
+        return rows
 
 
 # ==========================
@@ -130,66 +127,64 @@ async def update_batch(conn, updates):
 # ==========================
 
 async def process_batch(pool):
-
-    async with pool.acquire() as conn:
-
-        rows = await fetch_batch(conn)
-
-    if not rows:
-        return False
-
-    semaphore = asyncio.Semaphore(CONCURRENCY)
-
-    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
-
-    connector = aiohttp.TCPConnector(limit=CONCURRENCY)
-
-    async with aiohttp.ClientSession(
-        timeout=timeout,
-        connector=connector,
-    ) as session:
-
-        async def process(row):
-
-            async with semaphore:
-
-                thumbnail = await get_thumbnail(
-                    session,
-                    row["video_id"],
-                )
-
-                return (
-                    thumbnail,
-                    row["id"],
-                )
-
-        tasks = [process(r) for r in rows]
-
-        results = await asyncio.gather(*tasks)
-
-    updates = [
-        r for r in results
-        if r[0] is not None
-    ]
-
     async with pool.acquire() as conn:
 
         async with conn.transaction():
 
-            await update_batch(
-                conn,
-                updates,
-            )
+            rows = await conn.fetch(FETCH_SQL, BATCH_SIZE)
+
+            if not rows:
+                return False
+
+            timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+
+            connector = aiohttp.TCPConnector(limit=CONCURRENCY)
+
+            semaphore = asyncio.Semaphore(CONCURRENCY)
+
+            async with aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector,
+            ) as session:
+
+                async def process(row):
+                    async with semaphore:
+                        thumb = await get_thumbnail(
+                            session,
+                            row["video_id"],
+                        )
+                        return (
+                            thumb,
+                            row["id"],
+                        )
+
+                results = await asyncio.gather(
+                    *(process(r) for r in rows)
+                )
+
+            updates = [
+                r
+                for r in results
+                if r[0] is not None
+            ]
+
+            if updates:
+                await conn.executemany(
+                    """
+                    UPDATE videos
+                    SET thumbnail=$1
+                    WHERE id=$2
+                    """,
+                    updates,
+                )
 
     print(
-        f"Worker {WORKER_ID}: "
         f"Fetched={len(rows)} "
         f"Updated={len(updates)} "
         f"Failed={len(rows)-len(updates)}"
     )
 
     return True
-
 
 # ==========================
 # Main
@@ -207,7 +202,7 @@ async def main():
     pool = await asyncpg.create_pool(
         DATABASE_URL,
         min_size=1,
-        max_size=5,
+        max_size=1,
     )
 
     processed_batches = 0
