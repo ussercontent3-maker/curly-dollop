@@ -1,3 +1,5 @@
+import re
+import json
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 
@@ -39,7 +41,6 @@ def extract_video_id(element, href):
     if video_id:
         return str(video_id).strip()
 
-    # Fallback: use final URL slug identifier
     path = urlparse(href).path.rstrip("/")
 
     if not path:
@@ -47,8 +48,6 @@ def extract_video_id(element, href):
 
     slug = path.split("/")[-1]
 
-    # Most source URLs use an identifier at the end.
-    # Keep slug as fallback only.
     return slug
 
 
@@ -61,7 +60,6 @@ def parse_index_page(html, base_domain):
 
     videos = {}
 
-    # Primary selector.
     elements = soup.select(
         '[data-role="thumb-link"]'
     )
@@ -110,6 +108,41 @@ def parse_index_page(html, base_domain):
     return list(videos.values())
 
 
+# --------------------------------------------------
+# JSON STATE EXTRACTION (window.initials fallback)
+# --------------------------------------------------
+# Many tube-site templates only populate og:image / data-duration /
+# creator <a> tags via client-side JS. The real data still ships
+# server-side inside `<script id='initials-script'>window.initials={...}</script>`.
+# We parse that blob once per page and use it purely as a fallback
+# for fields the DOM-based selectors failed to find.
+
+_INITIALS_RE = re.compile(
+    r"id=['\"]initials-script['\"]>\s*window\.initials\s*=\s*(\{.*?\})\s*;\s*</script>",
+    re.DOTALL
+)
+
+
+def _extract_initials(html):
+    """Return the parsed window.initials dict, or None if not found/invalid."""
+    match = _INITIALS_RE.search(html)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+
+
+def _get_video_model(initials):
+    """Digs into window.initials to find the videoModel/videoEntity blocks."""
+    if not initials:
+        return {}, {}
+    video_model = initials.get("videoModel") or {}
+    video_entity = initials.get("videoEntity") or {}
+    return video_model, video_entity
+
+
 def parse_video_page(
     html,
     base_domain,
@@ -153,6 +186,10 @@ def parse_video_page(
         "creator_path": None
     }
 
+    # Parse the embedded JSON state once, reused by thumbnail/duration/creator below.
+    initials = _extract_initials(html)
+    video_model, video_entity = _get_video_model(initials)
+
 
     # --------------------------------------------------
     # TITLE
@@ -160,7 +197,6 @@ def parse_video_page(
 
     title = None
 
-    # OpenGraph title
     og_title = soup.find(
         "meta",
         attrs={
@@ -171,7 +207,6 @@ def parse_video_page(
     if og_title:
         title = og_title.get("content")
 
-    # Page title fallback
     if not title and soup.title:
         title = soup.title.get_text(
             " ",
@@ -196,6 +231,12 @@ def parse_video_page(
     if og_image:
         record["thumbnail_url"] = (
             og_image.get("content")
+        )
+
+    if not record["thumbnail_url"]:
+        record["thumbnail_url"] = (
+            video_model.get("thumbURL")
+            or video_entity.get("thumbBig")
         )
 
 
@@ -252,6 +293,16 @@ def parse_video_page(
             )
         )
 
+    if not record["preview_url"]:
+        trailer_url = video_model.get("trailerURL")
+        if trailer_url:
+            record["preview_url"] = trailer_url
+
+    if not record["preview_fallback_url"]:
+        trailer_fallback = video_model.get("trailerFallbackUrl")
+        if trailer_fallback:
+            record["preview_fallback_url"] = trailer_fallback
+
 
     # --------------------------------------------------
     # DURATION
@@ -268,6 +319,11 @@ def parse_video_page(
         )
 
         record["duration"] = duration
+
+    if record["duration"] in (None, ""):
+        duration = video_model.get("duration")
+        if duration is not None:
+            record["duration"] = duration
 
 
     # --------------------------------------------------
@@ -321,5 +377,29 @@ def parse_video_page(
             ).path
         )
 
+    if not record["creator_name"] or not record["creator_path"]:
+        author = video_model.get("author") or {}
+        landing = video_model.get("landing") or {}
+
+        creator_name = author.get("name") or landing.get("name")
+        creator_link_url = landing.get("link") or author.get("pageURL")
+
+        if not record["creator_name"] and creator_name:
+            record["creator_name"] = creator_name.strip() if isinstance(creator_name, str) else creator_name
+        if not record["creator_path"] and creator_link_url:
+            record["creator_path"] = urlparse(creator_link_url).path
+
 
     return record
+
+
+if __name__ == "__main__":
+    sample_html = '''
+    <html><head>
+    <title>Some Video Title</title>
+    </head><body>
+    <script id='initials-script'>window.initials={"videoModel":{"id":24435270,"duration":458,"thumbURL":"https://ic-vt-nss.cdnsolutions.media/a/HASH/s(w:1280,h:720),webp/024/435/270/v2/2560x1440.212.webp","trailerURL":"https://thumb-v0.cdnsolutions.media/a/x/024/435/270/526x298.94.3.4.t.mp4","author":{"name":"Pofegistka","pageURL":"https://greenxh.blog/users/pofegistka"},"landing":{"type":"person","name":"Pofegistka","link":"https://greenxh.blog/creators/pofegistka"}},"videoEntity":{"thumbBig":"https://ic-vt-nss.cdnsolutions.media/a/HASH2/s(w:526,h:298),webp/024/435/270/v2/526x298.212.webp"}};</script>
+    </body></html>
+    '''
+    rec = parse_video_page(sample_html, "https://greenxh.blog", {"video_id": "24435270", "source_path": "/videos/foo"})
+    print(json.dumps(rec, indent=2))
