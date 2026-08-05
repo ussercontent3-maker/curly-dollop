@@ -1,0 +1,38 @@
+name: Thumbnail Scraper
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: [0, 1, 2, 3, 4, 5, 6, 7]
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      WORKER_ID: ${{ matrix.worker }}
+      TOTAL_WORKERS: 8
+      BATCH_SIZE: 500
+      CONCURRENCY: 50
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run thumbnail worker
+        run: |
+          python thumbnail_worker.py
