@@ -227,14 +227,27 @@ def parse_video_page(
         "duration": None,
 
         "creator_name": None,
-
-        "creator_path": None
+        
+        "creator_path": None,
+        
+        "categories": [] 
     }
-
     # Parse the embedded JSON state once, reused by thumbnail/duration/
     # creator/preview below.
     initials = _extract_initials(html)
     video_model, video_entity = _get_video_model(initials)
+
+# --------------------------------------------------
+# CATEGORIES
+# --------------------------------------------------
+
+    tags = (initials or {}).get("videoTagsComponent", {}).get("tags", [])
+    
+    record["categories"] = [
+        tag["nameEn"]
+        for tag in tags
+        if tag.get("isCategory") and tag.get("nameEn")
+    ]
 
 
     # --------------------------------------------------
@@ -455,6 +468,7 @@ def parse_video_page(
             record["creator_path"] = urlparse(creator_link_url).path
 
     print("Thumbnail:", record["thumbnail_url"])
+    print("Categories:", record["categories"])
 
 
 
