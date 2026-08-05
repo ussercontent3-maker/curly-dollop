@@ -51,6 +51,74 @@ def extract_video_id(element, href):
     return slug
 
 
+# --------------------------------------------------
+# JSON STATE EXTRACTION (window.initials)
+# --------------------------------------------------
+# Both index pages and video pages ship a server-rendered
+# `<script id='initials-script'>window.initials={...}</script>` blob.
+# Preview-video URLs (trailerURL / trailerFallbackUrl) are injected by
+# JS on hover on index pages, and are NOT present as [data-previewvideo]
+# in the raw HTML we scrape -- they only exist inside this JSON. So we
+# pull them from window.initials instead of relying on any DOM attribute.
+
+_INITIALS_RE = re.compile(
+    r"id=['\"]initials-script['\"]>\s*window\.initials\s*=\s*(\{.*?\})\s*;\s*</script>",
+    re.DOTALL
+)
+
+
+def _extract_initials(html):
+    """Return the parsed window.initials dict, or None if not found/invalid."""
+    match = _INITIALS_RE.search(html)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+
+
+def _get_video_model(initials):
+    """Digs into window.initials to find the videoModel/videoEntity blocks (video page)."""
+    if not initials:
+        return {}, {}
+    video_model = initials.get("videoModel") or {}
+    video_entity = initials.get("videoEntity") or {}
+    return video_model, video_entity
+
+
+def extract_homepage_previews(initials):
+    """
+    Digs into window.initials to find per-thumbnail preview data on
+    index/search/listing pages. Returns {video_id: {...}}.
+    """
+    if not initials:
+        return {}
+
+    props = (
+        initials
+        .get("layoutPage", {})
+        .get("videoListProps", {})
+        .get("videoThumbProps", [])
+    )
+
+    previews = {}
+
+    for item in props:
+        item_id = item.get("id")
+        if item_id is None:
+            continue
+        previews[str(item_id)] = {
+            "preview_url": item.get("trailerURL"),
+            "preview_fallback_url": item.get("trailerFallbackUrl"),
+            "thumbnail": item.get("thumbURL"),
+            "title": item.get("title"),
+            "page": item.get("pageURL"),
+        }
+
+    return previews
+
+
 def parse_index_page(html, base_domain):
 
     soup = BeautifulSoup(
@@ -102,45 +170,22 @@ def parse_index_page(html, base_domain):
             ).replace(
                 "http://",
                 ""
-            )
+            ),
+            "preview_url": None,
+            "preview_fallback_url": None,
         }
 
+    # Merge in preview URLs pulled from window.initials, keyed by video id.
+    initials = _extract_initials(html)
+    previews = extract_homepage_previews(initials)
+
+    for video_id, video in videos.items():
+        preview = previews.get(video_id)
+        if preview:
+            video["preview_url"] = preview.get("preview_url")
+            video["preview_fallback_url"] = preview.get("preview_fallback_url")
+
     return list(videos.values())
-
-
-# --------------------------------------------------
-# JSON STATE EXTRACTION (window.initials fallback)
-# --------------------------------------------------
-# Many tube-site templates only populate og:image / data-duration /
-# creator <a> tags via client-side JS. The real data still ships
-# server-side inside `<script id='initials-script'>window.initials={...}</script>`.
-# We parse that blob once per page and use it purely as a fallback
-# for fields the DOM-based selectors failed to find.
-
-_INITIALS_RE = re.compile(
-    r"id=['\"]initials-script['\"]>\s*window\.initials\s*=\s*(\{.*?\})\s*;\s*</script>",
-    re.DOTALL
-)
-
-
-def _extract_initials(html):
-    """Return the parsed window.initials dict, or None if not found/invalid."""
-    match = _INITIALS_RE.search(html)
-    if not match:
-        return None
-    try:
-        return json.loads(match.group(1))
-    except json.JSONDecodeError:
-        return None
-
-
-def _get_video_model(initials):
-    """Digs into window.initials to find the videoModel/videoEntity blocks."""
-    if not initials:
-        return {}, {}
-    video_model = initials.get("videoModel") or {}
-    video_entity = initials.get("videoEntity") or {}
-    return video_model, video_entity
 
 
 def parse_video_page(
@@ -186,7 +231,8 @@ def parse_video_page(
         "creator_path": None
     }
 
-    # Parse the embedded JSON state once, reused by thumbnail/duration/creator below.
+    # Parse the embedded JSON state once, reused by thumbnail/duration/
+    # creator/preview below.
     initials = _extract_initials(html)
     video_model, video_entity = _get_video_model(initials)
 
@@ -275,6 +321,11 @@ def parse_video_page(
     # --------------------------------------------------
     # PREVIEW VIDEO
     # --------------------------------------------------
+    # [data-previewvideo] is added to the DOM by JS on hover -- it will
+    # never be present in raw scraped HTML on either index or video
+    # pages, so this selector is effectively dead. We keep it (in case
+    # some page variant differs) but always fall back to the trailer
+    # URLs already shipped in window.initials -> videoModel.
 
     preview = soup.select_one(
         "[data-previewvideo]"
@@ -391,15 +442,3 @@ def parse_video_page(
 
 
     return record
-
-
-if __name__ == "__main__":
-    sample_html = '''
-    <html><head>
-    <title>Some Video Title</title>
-    </head><body>
-    <script id='initials-script'>window.initials={"videoModel":{"id":24435270,"duration":458,"thumbURL":"https://ic-vt-nss.cdnsolutions.media/a/HASH/s(w:1280,h:720),webp/024/435/270/v2/2560x1440.212.webp","trailerURL":"https://thumb-v0.cdnsolutions.media/a/x/024/435/270/526x298.94.3.4.t.mp4","author":{"name":"Pofegistka","pageURL":"https://greenxh.blog/users/pofegistka"},"landing":{"type":"person","name":"Pofegistka","link":"https://greenxh.blog/creators/pofegistka"}},"videoEntity":{"thumbBig":"https://ic-vt-nss.cdnsolutions.media/a/HASH2/s(w:526,h:298),webp/024/435/270/v2/526x298.212.webp"}};</script>
-    </body></html>
-    '''
-    rec = parse_video_page(sample_html, "https://greenxh.blog", {"video_id": "24435270", "source_path": "/videos/foo"})
-    print(json.dumps(rec, indent=2))
