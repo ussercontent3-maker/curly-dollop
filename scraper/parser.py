@@ -468,8 +468,6 @@ def parse_video_page(
         if not record["creator_path"] and creator_link_url:
             record["creator_path"] = urlparse(creator_link_url).path
 
-    print("Thumbnail:", record["thumbnail_url"])
-    print("Categories:", record["categories"])
 
 
 
