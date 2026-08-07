@@ -17,9 +17,7 @@ cur = conn.cursor()
 # ---------------------------------------------------
 
 cur.execute("""
-
 CREATE TABLE IF NOT EXISTS videos (
-
     id BIGSERIAL PRIMARY KEY,
 
     video_id TEXT UNIQUE NOT NULL,
@@ -38,22 +36,29 @@ CREATE TABLE IF NOT EXISTS videos (
 
     creator TEXT,
 
+    categories TEXT[],
+
     created_at TIMESTAMP DEFAULT NOW()
-
 );
-
 """)
 
 cur.execute("""
-
 CREATE TABLE IF NOT EXISTS imported_batches (
-
     filename TEXT PRIMARY KEY,
 
     imported_at TIMESTAMP DEFAULT NOW()
-
 );
+""")
 
+conn.commit()
+
+# ---------------------------------------------------
+# Add categories column if table already exists
+# ---------------------------------------------------
+
+cur.execute("""
+ALTER TABLE videos
+ADD COLUMN IF NOT EXISTS categories TEXT[];
 """)
 
 conn.commit()
@@ -76,9 +81,7 @@ for batch in files:
     )
 
     if cur.fetchone():
-
         print(f"Skipping {filename}")
-
         continue
 
     print(f"Importing {filename}")
@@ -89,12 +92,25 @@ for batch in files:
 
         for line in f:
 
+            line = line.strip()
+
+            if not line:
+                continue
+
             item = json.loads(line)
 
+            # -----------------------------------------
+            # Categories from parser
+            # -----------------------------------------
+
+            categories = item.get("categories", [])
+
+            # Make sure categories is always a list
+            if not isinstance(categories, list):
+                categories = []
+
             rows.append(
-
                 (
-
                     item["video_id"],
 
                     item["title"],
@@ -109,19 +125,25 @@ for batch in files:
 
                     item.get("duration"),
 
-                    item.get("creator")
+                    item.get("creator"),
 
+                    categories
                 )
-
             )
 
-    execute_values(
+    if not rows:
+        print(f"No rows found in {filename}")
+        continue
 
+    # ---------------------------------------------------
+    # Insert videos
+    # ---------------------------------------------------
+
+    execute_values(
         cur,
 
         """
         INSERT INTO videos
-
         (
             video_id,
             title,
@@ -130,36 +152,40 @@ for batch in files:
             thumbnail,
             preview,
             duration,
-            creator
+            creator,
+            categories
         )
 
         VALUES %s
 
         ON CONFLICT (video_id)
         DO NOTHING
-
         """,
 
         rows,
 
         page_size=1000
-
     )
 
-    cur.execute(
+    # ---------------------------------------------------
+    # Mark batch as imported
+    # ---------------------------------------------------
 
+    cur.execute(
         """
         INSERT INTO imported_batches(filename)
         VALUES(%s)
         """,
-
         (filename,)
-
     )
 
     conn.commit()
 
     print(f"Imported {filename}")
+
+# ---------------------------------------------------
+# Close
+# ---------------------------------------------------
 
 cur.close()
 conn.close()
