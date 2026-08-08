@@ -1,3 +1,4 @@
+```python
 import os
 import gzip
 import json
@@ -7,10 +8,17 @@ import psycopg2
 from psycopg2.extras import execute_values
 from slugify import slugify
 
+
 DATABASE_URL = os.environ["DATABASE_URL"]
+
+
+# ---------------------------------------------------
+# Database connection
+# ---------------------------------------------------
 
 conn = psycopg2.connect(DATABASE_URL)
 cur = conn.cursor()
+
 
 # ---------------------------------------------------
 # Create tables if missing
@@ -42,6 +50,7 @@ CREATE TABLE IF NOT EXISTS videos (
 );
 """)
 
+
 cur.execute("""
 CREATE TABLE IF NOT EXISTS imported_batches (
     filename TEXT PRIMARY KEY,
@@ -50,7 +59,9 @@ CREATE TABLE IF NOT EXISTS imported_batches (
 );
 """)
 
+
 conn.commit()
+
 
 # ---------------------------------------------------
 # Add categories column if table already exists
@@ -63,6 +74,7 @@ ADD COLUMN IF NOT EXISTS categories TEXT[];
 
 conn.commit()
 
+
 # ---------------------------------------------------
 # Import batches
 # ---------------------------------------------------
@@ -71,12 +83,21 @@ folder = Path("data/videos")
 
 files = sorted(folder.glob("*.jsonl.gz"))
 
+
 for batch in files:
 
     filename = batch.name
 
+    # -----------------------------------------------
+    # Check if batch was already imported
+    # -----------------------------------------------
+
     cur.execute(
-        "SELECT 1 FROM imported_batches WHERE filename=%s",
+        """
+        SELECT 1
+        FROM imported_batches
+        WHERE filename = %s
+        """,
         (filename,)
     )
 
@@ -84,11 +105,18 @@ for batch in files:
         print(f"Skipping {filename}")
         continue
 
+
     print(f"Importing {filename}")
+
 
     rows = []
 
-    with gzip.open(batch, "rt", encoding="utf8") as f:
+
+    # -----------------------------------------------
+    # Read JSONL.GZ
+    # -----------------------------------------------
+
+    with gzip.open(batch, "rt", encoding="utf-8") as f:
 
         for line in f:
 
@@ -97,17 +125,35 @@ for batch in files:
             if not line:
                 continue
 
+
             item = json.loads(line)
 
-            # -----------------------------------------
-            # Categories from parser
-            # -----------------------------------------
+
+            # ---------------------------------------
+            # Categories
+            # ---------------------------------------
 
             categories = item.get("categories", [])
 
-            # Make sure categories is always a list
             if not isinstance(categories, list):
                 categories = []
+
+
+            # Clean categories
+            categories = [
+                category.strip()
+                for category in categories
+                if (
+                    isinstance(category, str)
+                    and category.strip()
+                    and category.strip() != ","
+                )
+            ]
+
+
+            # ---------------------------------------
+            # Build database row
+            # ---------------------------------------
 
             rows.append(
                 (
@@ -119,25 +165,36 @@ for batch in files:
 
                     item["source_path"],
 
-                    item.get("thumbnail"),
+                    # JSON uses thumbnail_url
+                    item.get("thumbnail_url"),
 
-                    item.get("preview"),
+                    # JSON uses preview_url
+                    item.get("preview_url"),
 
                     item.get("duration"),
 
-                    item.get("creator"),
+                    # JSON uses creator_name
+                    item.get("creator_name"),
 
-                    categories
+                    categories,
                 )
             )
 
+
+    # -----------------------------------------------
+    # Nothing to import
+    # -----------------------------------------------
+
     if not rows:
+
         print(f"No rows found in {filename}")
+
         continue
 
-    # ---------------------------------------------------
+
+    # -----------------------------------------------
     # Insert videos
-    # ---------------------------------------------------
+    # -----------------------------------------------
 
     execute_values(
         cur,
@@ -167,21 +224,27 @@ for batch in files:
         page_size=1000
     )
 
-    # ---------------------------------------------------
+
+    # -----------------------------------------------
     # Mark batch as imported
-    # ---------------------------------------------------
+    # -----------------------------------------------
 
     cur.execute(
         """
         INSERT INTO imported_batches(filename)
-        VALUES(%s)
+        VALUES (%s)
+        ON CONFLICT (filename)
+        DO NOTHING
         """,
         (filename,)
     )
 
+
     conn.commit()
 
+
     print(f"Imported {filename}")
+
 
 # ---------------------------------------------------
 # Close
@@ -190,4 +253,6 @@ for batch in files:
 cur.close()
 conn.close()
 
+
 print("Finished.")
+```
