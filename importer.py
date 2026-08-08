@@ -1,4 +1,3 @@
-```python
 import os
 import gzip
 import json
@@ -255,4 +254,3 @@ conn.close()
 
 
 print("Finished.")
-```
